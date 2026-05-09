@@ -202,6 +202,7 @@
     "properties": {}
   },
   "contracts": {
-    "speechProviders": ["volcengine"]
+    "speechProviders": ["volcengine"],
+    "realtimeTranscriptionProviders": ["volcengine"]
   }
 }

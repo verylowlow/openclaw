@@ -220,6 +220,7 @@ async function resolveProvider(config: VoiceCallConfig): Promise<VoiceCallProvid
         {
           accountSid: config.twilio?.accountSid,
           authToken: resolveTwilioAuthToken(config),
+          apiBaseUrl: config.twilio?.apiBaseUrl,
         },
         {
           allowNgrokFreeTierLoopbackBypass,
@@ -450,7 +451,8 @@ export async function createVoiceCallRuntime(params: {
 
     if (
       providerRequiresPublicWebhook(provider.name) &&
-      isProviderUnreachableWebhookUrl(webhookUrl)
+      isProviderUnreachableWebhookUrl(webhookUrl) &&
+      !config.twilio?.apiBaseUrl
     ) {
       throw new Error(
         `[voice-call] ${provider.name} requires a publicly reachable webhook URL. ` +

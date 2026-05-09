@@ -71,6 +71,7 @@ type StreamSendResult = {
 type TwilioProviderConfig = {
   accountSid?: string;
   authToken?: string;
+  apiBaseUrl?: string;
 };
 
 export class TwilioProvider implements VoiceCallProvider {
@@ -143,7 +144,9 @@ export class TwilioProvider implements VoiceCallProvider {
 
     this.accountSid = config.accountSid;
     this.authToken = config.authToken;
-    this.baseUrl = `https://api.twilio.com/2010-04-01/Accounts/${this.accountSid}`;
+    this.baseUrl = config.apiBaseUrl
+      ? `${config.apiBaseUrl}/2010-04-01/Accounts/${this.accountSid}`
+      : `https://api.twilio.com/2010-04-01/Accounts/${this.accountSid}`;
     this.options = options;
 
     if (options.publicUrl) {
@@ -222,6 +225,7 @@ export class TwilioProvider implements VoiceCallProvider {
     params: Record<string, string | string[]>,
     options?: { allowNotFound?: boolean },
   ): Promise<T> {
+    const parsedBase = new URL(this.baseUrl);
     return await twilioApiRequest<T>({
       baseUrl: this.baseUrl,
       accountSid: this.accountSid,
@@ -229,6 +233,7 @@ export class TwilioProvider implements VoiceCallProvider {
       endpoint,
       body: params,
       allowNotFound: options?.allowNotFound,
+      allowedHostnames: [parsedBase.hostname],
     });
   }
 
@@ -822,6 +827,7 @@ export class TwilioProvider implements VoiceCallProvider {
 
   async getCallStatus(input: GetCallStatusInput): Promise<GetCallStatusResult> {
     try {
+      const parsedBase = new URL(this.baseUrl);
       const data = await guardedJsonApiRequest<{ status?: string }>({
         url: `${this.baseUrl}/Calls/${input.providerCallId}.json`,
         method: "GET",
@@ -829,7 +835,7 @@ export class TwilioProvider implements VoiceCallProvider {
           Authorization: `Basic ${Buffer.from(`${this.accountSid}:${this.authToken}`).toString("base64")}`,
         },
         allowNotFound: true,
-        allowedHostnames: ["api.twilio.com"],
+        allowedHostnames: [parsedBase.hostname],
         auditContext: "twilio-get-call-status",
         errorPrefix: "Twilio get call status error",
       });

@@ -59,6 +59,8 @@ const TwilioConfigSchema = z
     accountSid: z.string().min(1).optional(),
     /** Twilio Auth Token */
     authToken: SecretInputSchema.optional(),
+    /** Custom Twilio API base URL (for local emulators like newcallcall) */
+    apiBaseUrl: z.string().url().optional(),
   })
   .strict();
 
@@ -732,6 +734,7 @@ export function resolveVoiceCallConfig(config: VoiceCallConfigInput): VoiceCallC
     resolved.twilio = resolved.twilio ?? {};
     resolved.twilio.accountSid = resolved.twilio.accountSid ?? process.env.TWILIO_ACCOUNT_SID;
     resolved.twilio.authToken = resolved.twilio.authToken ?? process.env.TWILIO_AUTH_TOKEN;
+    resolved.twilio.apiBaseUrl = resolved.twilio.apiBaseUrl ?? process.env.TWILIO_API_BASE_URL;
   }
 
   // Plivo

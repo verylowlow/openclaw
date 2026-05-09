@@ -277,6 +277,9 @@
           },
           "authToken": {
             "type": ["string", "object"]
+          },
+          "apiBaseUrl": {
+            "type": "string"
           }
         }
       },

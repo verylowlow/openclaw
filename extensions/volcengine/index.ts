@@ -3,6 +3,7 @@ import { createProviderApiKeyAuthMethod } from "openclaw/plugin-sdk/provider-aut
 import { ensureModelAllowlistEntry } from "openclaw/plugin-sdk/provider-onboard";
 import { DOUBAO_CODING_MODEL_CATALOG, DOUBAO_MODEL_CATALOG } from "./models.js";
 import { buildDoubaoCodingProvider, buildDoubaoProvider } from "./provider-catalog.js";
+import { buildVolcengineRealtimeTranscriptionProvider } from "./realtime-transcription-provider.js";
 import { buildVolcengineSpeechProvider } from "./speech-provider.js";
 
 const PROVIDER_ID = "volcengine";
@@ -80,5 +81,6 @@ export default definePluginEntry({
       },
     });
     api.registerSpeechProvider(buildVolcengineSpeechProvider());
+    api.registerRealtimeTranscriptionProvider(buildVolcengineRealtimeTranscriptionProvider());
   },
 });

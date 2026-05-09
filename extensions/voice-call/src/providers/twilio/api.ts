@@ -31,7 +31,7 @@ export class TwilioApiError extends Error {
   constructor(httpStatus: number, responseText: string) {
     const parsed = parseTwilioApiError(responseText);
     const detail = parsed.message ?? responseText;
-    super(`Twilio API error: ${httpStatus} ${detail}`);
+    super("Twilio API error: " + httpStatus + " " + detail);
     this.name = "TwilioApiError";
     this.httpStatus = httpStatus;
     this.responseText = responseText;
@@ -46,6 +46,7 @@ export async function twilioApiRequest<T = unknown>(params: {
   endpoint: string;
   body: URLSearchParams | Record<string, string | string[]>;
   allowNotFound?: boolean;
+  allowedHostnames?: string[];
 }): Promise<T> {
   const bodyParams =
     params.body instanceof URLSearchParams
@@ -61,18 +62,33 @@ export async function twilioApiRequest<T = unknown>(params: {
           return acc;
         }, new URLSearchParams());
 
-  const requestUrl = `${params.baseUrl}${params.endpoint}`;
+  const requestUrl = params.baseUrl + params.endpoint;
+  const parsedBase = new URL(params.baseUrl);
+  const hostnames = params.allowedHostnames ?? [parsedBase.hostname];
+
+  // DEBUG: log the request details
+  console.log("[DEBUG-TWILIO-API] URL:", requestUrl);
+  console.log("[DEBUG-TWILIO-API] accountSid:", params.accountSid);
+  console.log(
+    "[DEBUG-TWILIO-API] authToken length:",
+    params.authToken?.length,
+    "type:",
+    typeof params.authToken,
+  );
+  console.log("[DEBUG-TWILIO-API] authToken first 8 chars:", params.authToken?.substring(0, 8));
+
   const { response, release } = await fetchWithSsrFGuard({
     url: requestUrl,
     init: {
       method: "POST",
       headers: {
-        Authorization: `Basic ${Buffer.from(`${params.accountSid}:${params.authToken}`).toString("base64")}`,
+        Authorization:
+          "Basic " + Buffer.from(params.accountSid + ":" + params.authToken).toString("base64"),
         "Content-Type": "application/x-www-form-urlencoded",
       },
       body: bodyParams,
     },
-    policy: { allowedHostnames: ["api.twilio.com"] },
+    policy: { allowedHostnames: hostnames },
     timeoutMs: TWILIO_API_TIMEOUT_MS,
     auditContext: "voice-call.twilio.api",
   });
@@ -82,6 +98,7 @@ export async function twilioApiRequest<T = unknown>(params: {
         return undefined as T;
       }
       const errorText = await response.text();
+      console.log("[DEBUG-TWILIO-API] Error response status:", response.status, "body:", errorText);
       throw new TwilioApiError(response.status, errorText);
     }
 

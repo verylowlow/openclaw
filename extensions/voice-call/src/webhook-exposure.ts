@@ -9,6 +9,9 @@ type VoiceCallWebhookExposureConfig = {
   tailscale?: {
     mode?: string;
   };
+  twilio?: {
+    apiBaseUrl?: string;
+  };
 };
 
 type VoiceCallWebhookExposureStatus = {
@@ -47,6 +50,13 @@ export function resolveWebhookExposureStatus(
 
   if (config.publicUrl) {
     if (isProviderUnreachableWebhookUrl(config.publicUrl)) {
+      if (config.twilio?.apiBaseUrl) {
+        return {
+          ok: true,
+          configured: true,
+          message: `Local webhook URL reachable via custom apiBaseUrl (${config.twilio.apiBaseUrl})`,
+        };
+      }
       return {
         ok: false,
         configured: true,
