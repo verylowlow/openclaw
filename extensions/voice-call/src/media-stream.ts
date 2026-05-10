@@ -89,7 +89,7 @@ type PendingConnection = {
   timeout: ReturnType<typeof setTimeout>;
 };
 
-const DEFAULT_PRE_START_TIMEOUT_MS = 5000;
+const DEFAULT_PRE_START_TIMEOUT_MS = 9000; //old 5000
 const DEFAULT_MAX_PENDING_CONNECTIONS = 32;
 const DEFAULT_MAX_PENDING_CONNECTIONS_PER_IP = 4;
 const DEFAULT_MAX_CONNECTIONS = 128;
