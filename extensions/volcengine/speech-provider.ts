@@ -11,7 +11,6 @@ import { volcengineTTS, type VolcengineTtsEncoding } from "./tts.js";
 const DEFAULT_VOICE = "en_female_anna_mars_bigtts";
 const DEFAULT_CLUSTER = "volcano_tts";
 const DEFAULT_RESOURCE_ID = "seed-tts-1.0";
-const DEFAULT_APP_KEY = "aGjiRDfUWi";
 
 const VOLCENGINE_VOICES: readonly string[] = [
   "en_female_anna_mars_bigtts",
@@ -33,7 +32,6 @@ type VolcengineTtsProviderConfig = {
   voice: string;
   cluster: string;
   resourceId: string;
-  appKey: string;
   baseUrl?: string;
   speedRatio?: number;
   emotion?: string;
@@ -72,10 +70,6 @@ function normalizeVolcengineProviderConfig(
       trimToUndefined(raw?.resourceId) ??
       trimToUndefined(process.env.VOLCENGINE_TTS_RESOURCE_ID) ??
       DEFAULT_RESOURCE_ID,
-    appKey:
-      trimToUndefined(raw?.appKey) ??
-      trimToUndefined(process.env.VOLCENGINE_TTS_APP_KEY) ??
-      DEFAULT_APP_KEY,
     baseUrl: trimToUndefined(raw?.baseUrl) ?? trimToUndefined(process.env.VOLCENGINE_TTS_BASE_URL),
     speedRatio: asFiniteNumber(raw?.speedRatio),
     emotion: trimToUndefined(raw?.emotion),
@@ -83,11 +77,7 @@ function normalizeVolcengineProviderConfig(
 }
 
 function resolveSeedSpeechApiKey(configApiKey?: string): string | undefined {
-  return (
-    configApiKey ??
-    trimToUndefined(process.env.VOLCENGINE_TTS_API_KEY) ??
-    trimToUndefined(process.env.BYTEPLUS_SEED_SPEECH_API_KEY)
-  );
+  return configApiKey ?? trimToUndefined(process.env.VOLCENGINE_TTS_API_KEY);
 }
 
 function readProviderConfig(config: SpeechProviderConfig): VolcengineTtsProviderConfig {
@@ -103,7 +93,6 @@ function readProviderConfig(config: SpeechProviderConfig): VolcengineTtsProvider
     voice: trimToUndefined(config.voice) ?? normalized.voice,
     cluster: trimToUndefined(config.cluster) ?? normalized.cluster,
     resourceId: trimToUndefined(config.resourceId) ?? normalized.resourceId,
-    appKey: trimToUndefined(config.appKey) ?? normalized.appKey,
     baseUrl: trimToUndefined(config.baseUrl) ?? normalized.baseUrl,
     speedRatio: asFiniteNumber(config.speedRatio) ?? normalized.speedRatio,
     emotion: trimToUndefined(config.emotion) ?? normalized.emotion,
@@ -195,7 +184,7 @@ export function buildVolcengineSpeechProvider(): SpeechProviderPlugin {
       if (!apiKey && (!appId || !token)) {
         throw new Error(
           "Volcengine TTS credentials missing. Set VOLCENGINE_TTS_API_KEY, " +
-            "BYTEPLUS_SEED_SPEECH_API_KEY, or legacy VOLCENGINE_TTS_APPID and VOLCENGINE_TTS_TOKEN.",
+            "or legacy VOLCENGINE_TTS_APPID and VOLCENGINE_TTS_TOKEN.",
         );
       }
 
@@ -210,7 +199,6 @@ export function buildVolcengineSpeechProvider(): SpeechProviderPlugin {
         voice: overrides.voice ?? cfg.voice,
         cluster: cfg.cluster,
         resourceId: cfg.resourceId,
-        appKey: cfg.appKey,
         baseUrl: cfg.baseUrl,
         speedRatio: overrides.speedRatio ?? cfg.speedRatio,
         emotion: overrides.emotion ?? cfg.emotion,
@@ -223,6 +211,43 @@ export function buildVolcengineSpeechProvider(): SpeechProviderPlugin {
         outputFormat: encoding === "ogg_opus" ? "opus" : "mp3",
         fileExtension: encoding === "ogg_opus" ? ".opus" : ".mp3",
         voiceCompatible: isVoiceNote,
+      };
+    },
+
+    synthesizeTelephony: async (req) => {
+      const cfg = readProviderConfig(req.providerConfig);
+      const overrides = readVolcengineOverrides(req.providerOverrides);
+      const apiKey = resolveSeedSpeechApiKey(cfg.apiKey);
+      const appId = cfg.appId || process.env.VOLCENGINE_TTS_APPID;
+      const token = cfg.token || process.env.VOLCENGINE_TTS_TOKEN;
+
+      if (!apiKey && (!appId || !token)) {
+        throw new Error(
+          "Volcengine TTS credentials missing. Set VOLCENGINE_TTS_API_KEY, " +
+            "or legacy VOLCENGINE_TTS_APPID and VOLCENGINE_TTS_TOKEN.",
+        );
+      }
+
+      const audioBuffer = await volcengineTTS({
+        text: req.text,
+        apiKey,
+        appId,
+        token,
+        voice: overrides.voice ?? cfg.voice,
+        cluster: cfg.cluster,
+        resourceId: cfg.resourceId,
+        baseUrl: cfg.baseUrl,
+        speedRatio: overrides.speedRatio ?? cfg.speedRatio,
+        emotion: overrides.emotion ?? cfg.emotion,
+        encoding: "pcm",
+        //sampleRate: 8_000,
+        timeoutMs: req.timeoutMs,
+      });
+
+      return {
+        audioBuffer,
+        outputFormat: "pcm",
+        sampleRate: 16_000,
       };
     },
   };

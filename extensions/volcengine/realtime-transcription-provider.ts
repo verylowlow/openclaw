@@ -33,7 +33,10 @@ type VolcRealtimeConfig = {
 
 // ── Constants ───────────────────────────────────────────────────
 
-const VOLCENGINE_WS_URL = "wss://openspeech.bytedance.com/api/v3/sauc/bigmodel";
+// Use bigmodel_async (bidirectional streaming optimized) endpoint.
+// This is the officially recommended endpoint for real-time scenarios.
+// NOTE: bidirectional streaming does NOT support the "language" field.
+const VOLCENGINE_WS_URL = "wss://openspeech.bytedance.com/api/v3/sauc/bigmodel_async";
 
 const VOLCENGINE_CONNECT_TIMEOUT_MS = 10_000;
 
@@ -143,9 +146,13 @@ function createVolcSession(
           },
         };
 
-        // language is only supported by bigmodel_nostream per official docs
+        // NOTE: bidirectional streaming (bigmodel / bigmodel_async) does NOT
+        // support the "language" field. It is silently ignored to avoid 400.
         if (config.language) {
-          (configPayload.audio as Record<string, unknown>).language = config.language;
+          console.warn(
+            `[volcengine] language="${config.language}" is ignored because ` +
+              `bidirectional streaming does not support this field.`,
+          );
         }
 
         try {

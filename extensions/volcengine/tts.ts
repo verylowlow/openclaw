@@ -11,7 +11,6 @@ type VolcengineTTSParams = {
   voice?: string;
   cluster?: string;
   resourceId?: string;
-  appKey?: string;
   baseUrl?: string;
   speedRatio?: number;
   volumeRatio?: number;
@@ -25,9 +24,7 @@ const DEFAULT_SEED_VOICE = "en_female_anna_mars_bigtts";
 const DEFAULT_LEGACY_VOICE = "zh_female_xiaohe_uranus_bigtts";
 const DEFAULT_CLUSTER = "volcano_tts";
 const DEFAULT_SEED_TTS_RESOURCE_ID = "seed-tts-1.0";
-const DEFAULT_SEED_TTS_APP_KEY = "aGjiRDfUWi";
-const BYTEPLUS_SEED_TTS_URL =
-  "https://voice.ap-southeast-1.bytepluses.com/api/v3/tts/unidirectional";
+const VOLCENGINE_V3_TTS_URL = "https://openspeech.bytedance.com/api/v3/tts/unidirectional";
 const VOLCENGINE_LEGACY_TTS_URL = "https://openspeech.bytedance.com/api/v1/tts";
 
 type VolcengineTtsResponse = {
@@ -84,7 +81,7 @@ function parseSeedTtsFrames(text: string): VolcengineTtsResponse[] {
   }
 
   try {
-    return [toTtsResponse(parseJsonObject(trimmed, "BytePlus Seed Speech"))];
+    return [toTtsResponse(parseJsonObject(trimmed, "Volcengine"))];
   } catch {
     // The HTTP API streams JSON frames; Response.text() preserves line breaks.
   }
@@ -96,7 +93,7 @@ function parseSeedTtsFrames(text: string): VolcengineTtsResponse[] {
       continue;
     }
     const json = item.startsWith("data:") ? item.slice("data:".length).trim() : item;
-    frames.push(toTtsResponse(parseJsonObject(json, "BytePlus Seed Speech")));
+    frames.push(toTtsResponse(parseJsonObject(json, "Volcengine")));
   }
   return frames;
 }
@@ -115,11 +112,10 @@ async function seedSpeechTTS(params: VolcengineTTSParams & { apiKey: string }): 
     apiKey,
     voice = DEFAULT_SEED_VOICE,
     resourceId = DEFAULT_SEED_TTS_RESOURCE_ID,
-    appKey = DEFAULT_SEED_TTS_APP_KEY,
-    baseUrl = BYTEPLUS_SEED_TTS_URL,
+    baseUrl = VOLCENGINE_V3_TTS_URL,
     speedRatio = 1.0,
     emotion,
-    encoding = "ogg_opus",
+    encoding = "pcm",
     timeoutMs = 30_000,
   } = params;
   const audioFormat = seedAudioFormat(encoding);
@@ -131,7 +127,7 @@ async function seedSpeechTTS(params: VolcengineTTSParams & { apiKey: string }): 
       speaker: voice,
       audio_params: {
         format: audioFormat,
-        sample_rate: 24_000,
+        sample_rate: 16_000,
       },
       ...(speedRatio !== 1.0 ? { speed_ratio: speedRatio } : {}),
       ...(emotion ? { emotion } : {}),
@@ -147,7 +143,6 @@ async function seedSpeechTTS(params: VolcengineTTSParams & { apiKey: string }): 
         Connection: "keep-alive",
         "X-Api-Key": apiKey,
         "X-Api-Resource-Id": resourceId,
-        "X-Api-App-Key": appKey,
       },
       body: payload,
     },
@@ -170,14 +165,12 @@ async function seedSpeechTTS(params: VolcengineTTSParams & { apiKey: string }): 
         continue;
       }
       throw new Error(
-        `BytePlus Seed Speech TTS error ${frame.code ?? response.status}: ${
-          frame.message ?? "unknown"
-        }`,
+        `Volcengine TTS error ${frame.code ?? response.status}: ${frame.message ?? "unknown"}`,
       );
     }
 
     if (!response.ok || chunks.length === 0) {
-      throw new Error(`BytePlus Seed Speech TTS error ${response.status}: no audio data`);
+      throw new Error(`Volcengine TTS error ${response.status}: no audio data`);
     }
 
     return Buffer.concat(chunks);
@@ -261,6 +254,6 @@ export async function volcengineTTS(params: VolcengineTTSParams): Promise<Buffer
   }
 
   throw new Error(
-    "Volcengine TTS credentials missing. Set a BytePlus Seed Speech API key or legacy AppID/token.",
+    "Volcengine TTS credentials missing. Set VOLCENGINE_TTS_API_KEY or legacy VOLCENGINE_TTS_APPID and VOLCENGINE_TTS_TOKEN.",
   );
 }

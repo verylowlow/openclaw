@@ -35,7 +35,7 @@ import { startStaleCallReaper } from "./webhook/stale-call-reaper.js";
 const MAX_WEBHOOK_BODY_BYTES = WEBHOOK_BODY_READ_DEFAULTS.preAuth.maxBytes;
 const WEBHOOK_BODY_TIMEOUT_MS = WEBHOOK_BODY_READ_DEFAULTS.preAuth.timeoutMs;
 const MISSING_REMOTE_ADDRESS_IN_FLIGHT_KEY = "__voice_call_no_remote__";
-const STREAM_DISCONNECT_HANGUP_GRACE_MS = 2000;
+const STREAM_DISCONNECT_HANGUP_GRACE_MS = 10000; //2000,old value
 const TRANSCRIPT_LOG_MAX_CHARS = 200;
 
 type RealtimeTranscriptionRuntime = typeof import("./realtime-transcription.runtime.js");
