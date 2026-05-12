@@ -240,6 +240,11 @@
     "responseTimeoutMs": {
       "label": "Response Timeout (ms)",
       "advanced": true
+    },
+    "agentId": {
+      "label": "Agent ID",
+      "help": "Which agent handles voice responses. Falls back to 'main' when unset.",
+      "advanced": true
     }
   },
   "configSchema": {
@@ -887,6 +892,10 @@
       "responseTimeoutMs": {
         "type": "integer",
         "minimum": 1
+      },
+      "agentId": {
+        "type": "string",
+        "minLength": 1
       }
     }
   },
