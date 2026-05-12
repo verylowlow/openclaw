@@ -92,8 +92,8 @@ function normalizeProviderConfig(config: RealtimeTranscriptionProviderConfig): V
     enableDdc: readBoolean(raw?.enableDdc) ?? false,
     model: trimToUndefined(raw?.model) ?? "bigmodel",
     resultType: trimToUndefined(raw?.resultType) ?? "full",
-    showUtterances: readBoolean(raw?.showUtterances) ?? false,
-    enableNonstream: readBoolean(raw?.enableNonstream) ?? false,
+    showUtterances: readBoolean(raw?.showUtterances) ?? true,
+    enableNonstream: readBoolean(raw?.enableNonstream) ?? true,
   };
 }
 
@@ -106,6 +106,7 @@ function createVolcSession(
   let ws: WebSocket | null = null;
   let connected = false;
   let pendingTranscript = "";
+  let lastDefiniteCount = 0; // track how many definite utterances we've already emitted
   let seq = 2; // seq=1 is reserved for full client request
   let audioAccumulator = Buffer.alloc(0);
 
@@ -176,12 +177,45 @@ function createVolcSession(
         }
 
         if (resp.text) {
-          // Default "full" mode: resp.text is the complete current text.
+          // "full" result_type: resp.text is the complete current text.
           pendingTranscript = resp.text;
           req.onPartial?.(pendingTranscript);
         }
 
-        if (resp.isLast) {
+        // ── Utterance boundary detection ──
+        // When show_utterances + enable_nonstream are enabled on bigmodel_async,
+        // the server returns `result.utterances[]` with `definite: true` for
+        // each VAD-finalized sentence. This is the ONLY reliable way to detect
+        // real-time utterance boundaries — the binary `isLast` flag only fires
+        // when the client sends a termination frame (session end).
+        //
+        // IMPORTANT: With result_type="full", every server response contains ALL
+        // utterances seen so far. We must track how many definite utterances we've
+        // already emitted to avoid firing onTranscript multiple times for the
+        // same finalized sentence.
+        if (resp.payload) {
+          const result = resp.payload.result as Record<string, unknown> | undefined;
+          const utterances = result?.utterances;
+          if (Array.isArray(utterances)) {
+            const definiteUtts = utterances.filter(
+              (u) => u && typeof u === "object" && (u as Record<string, unknown>).definite === true,
+            ) as Array<Record<string, unknown>>;
+
+            // Only emit NEW definite utterances (those beyond lastDefiniteCount)
+            for (let i = lastDefiniteCount; i < definiteUtts.length; i++) {
+              const uttText = String(definiteUtts[i].text ?? "").trim();
+              if (uttText) {
+                console.log(`[volcengine] definite utterance: "${uttText}"`);
+                req.onTranscript?.(uttText);
+              }
+            }
+            lastDefiniteCount = definiteUtts.length;
+          }
+        }
+
+        // Session-end fallback: if isLast fires (termination frame response),
+        // emit any remaining pending text that wasn't caught by utterance detection.
+        if (resp.isLast && pendingTranscript) {
           req.onTranscript?.(pendingTranscript);
           pendingTranscript = "";
         }
