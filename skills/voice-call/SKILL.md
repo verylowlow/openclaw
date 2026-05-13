@@ -14,7 +14,7 @@ metadata:
 
 # Voice Call
 
-Use the voice-call plugin to start or inspect calls (Twilio, Telnyx, Plivo, or mock).
+Use the voice-call plugin to start or inspect calls (Twilio, Telnyx, Plivo, or mock).Agent should reply quickly and use less words because the user is hearing on line.
 
 ## CLI
 

@@ -29,6 +29,7 @@ type VolcRealtimeConfig = {
   resultType: string;
   showUtterances: boolean;
   enableNonstream: boolean;
+  endWindowSize: number;
 };
 
 // ── Constants ───────────────────────────────────────────────────
@@ -94,6 +95,7 @@ function normalizeProviderConfig(config: RealtimeTranscriptionProviderConfig): V
     resultType: trimToUndefined(raw?.resultType) ?? "full",
     showUtterances: readBoolean(raw?.showUtterances) ?? true,
     enableNonstream: readBoolean(raw?.enableNonstream) ?? true,
+    endWindowSize: typeof raw?.endWindowSize === "number" ? raw.endWindowSize : 400,
   };
 }
 
@@ -144,6 +146,7 @@ function createVolcSession(
             result_type: config.resultType,
             show_utterances: config.showUtterances,
             enable_nonstream: config.enableNonstream,
+            end_window_size: config.endWindowSize,
           },
         };
 
@@ -211,13 +214,6 @@ function createVolcSession(
             }
             lastDefiniteCount = definiteUtts.length;
           }
-        }
-
-        // Session-end fallback: if isLast fires (termination frame response),
-        // emit any remaining pending text that wasn't caught by utterance detection.
-        if (resp.isLast && pendingTranscript) {
-          req.onTranscript?.(pendingTranscript);
-          pendingTranscript = "";
         }
       });
 

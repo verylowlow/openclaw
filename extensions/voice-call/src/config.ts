@@ -432,7 +432,7 @@ export const VoiceCallConfigSchema = z
     staleCallReaperSeconds: z.number().int().nonnegative().default(120),
 
     /** Silence timeout for end-of-speech detection (ms) */
-    silenceTimeoutMs: z.number().int().positive().default(500),
+    silenceTimeoutMs: z.number().int().positive().default(600),
 
     /** Timeout for user transcript (ms) */
     transcriptTimeoutMs: z.number().int().positive().default(180000),
