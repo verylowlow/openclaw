@@ -109,6 +109,7 @@ function createVolcSession(
   let connected = false;
   let pendingTranscript = "";
   let lastDefiniteCount = 0; // track how many definite utterances we've already emitted
+  let speechStarted = false; // track whether we've fired onSpeechStart
   let seq = 2; // seq=1 is reserved for full client request
   let audioAccumulator = Buffer.alloc(0);
 
@@ -183,6 +184,17 @@ function createVolcSession(
           // "full" result_type: resp.text is the complete current text.
           pendingTranscript = resp.text;
           req.onPartial?.(pendingTranscript);
+
+          // Fire onSpeechStart on the first non-empty text from the server.
+          // Volcengine's binary protocol has no explicit "speech start" signal,
+          // so we use the first partial transcript as the indicator that the
+          // user has started speaking. This enables barge-in (clearing TTS
+          // playback) before the full utterance is finalized.
+          if (!speechStarted) {
+            speechStarted = true;
+            console.log("[volcengine] speech start detected (first partial)");
+            req.onSpeechStart?.();
+          }
         }
 
         // ── Utterance boundary detection ──
