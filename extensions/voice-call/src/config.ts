@@ -201,10 +201,10 @@ const OutboundConfigSchema = z
     /** Default call mode for outbound calls */
     defaultMode: CallModeSchema.default("notify"),
     /** Seconds to wait after TTS before auto-hangup in notify mode */
-    notifyHangupDelaySec: z.number().int().nonnegative().default(3),
+    notifyHangupDelaySec: z.number().int().nonnegative().default(60),
   })
   .strict()
-  .default({ defaultMode: "notify", notifyHangupDelaySec: 3 });
+  .default({ defaultMode: "notify", notifyHangupDelaySec: 60 });
 
 // -----------------------------------------------------------------------------
 // Realtime Voice Configuration
