@@ -6,7 +6,8 @@
     "onCommands": ["voicecall"]
   },
   "contracts": {
-    "tools": ["voice_call"]
+    "tools": ["voice_call"],
+    "realtimeVoiceProviders": ["volcReal"]
   },
   "channelEnvVars": {
     "voice-call": [
@@ -19,7 +20,8 @@
       "PLIVO_AUTH_ID",
       "PLIVO_AUTH_TOKEN",
       "NGROK_AUTHTOKEN",
-      "NGROK_DOMAIN"
+      "NGROK_DOMAIN",
+      "VOLCENGINE_ACCESS_TOKEN"
     ]
   },
   "uiHints": {
@@ -904,6 +906,7 @@
     "secretInputs": {
       "paths": [
         { "path": "twilio.authToken", "expected": "string" },
+        { "path": "realtime.providers.volcReal.accessToken", "expected": "string" },
         { "path": "realtime.providers.*.apiKey", "expected": "string" },
         { "path": "streaming.providers.*.apiKey", "expected": "string" },
         { "path": "tts.providers.*.apiKey", "expected": "string" }

@@ -37,6 +37,25 @@ export type ToolHandlerFn = (
 
 const STREAM_TOKEN_TTL_MS = 30_000;
 const DEFAULT_HOST = "localhost:8443";
+
+/** Match TwilioProvider streaming: https→wss, http→ws so local HTTP gateways can accept media streams. */
+function resolveRealtimeStreamWsScheme(params: {
+  publicUrlScheme: "ws" | "wss" | null;
+  host: string;
+}): "ws" | "wss" {
+  if (params.publicUrlScheme) {
+    return params.publicUrlScheme;
+  }
+  const hostLower = params.host.toLowerCase();
+  if (
+    hostLower === "localhost" ||
+    hostLower.startsWith("localhost:") ||
+    hostLower.startsWith("127.")
+  ) {
+    return "ws";
+  }
+  return "wss";
+}
 const MAX_REALTIME_MESSAGE_BYTES = 256 * 1024;
 const MAX_REALTIME_WS_BUFFERED_BYTES = 1024 * 1024;
 const FORCED_CONSULT_FALLBACK_DELAY_MS = 200;
@@ -301,6 +320,8 @@ export class RealtimeCallHandler {
   private readonly nativeConsultsInFlightByCallId = new Map<string, NativeConsultState>();
   private publicOrigin: string | null = null;
   private publicPathPrefix = "";
+  /** Derived from setPublicUrl(); drives ws vs wss in TwiML (null = infer from Host). */
+  private publicUrlStreamScheme: "ws" | "wss" | null = null;
 
   constructor(
     private readonly config: VoiceCallRealtimeConfig,
@@ -315,6 +336,7 @@ export class RealtimeCallHandler {
     try {
       const parsed = new URL(url);
       this.publicOrigin = parsed.host;
+      this.publicUrlStreamScheme = parsed.protocol === "https:" ? "wss" : "ws";
       const normalizedServePath = normalizePath(this.servePath);
       const normalizedPublicPath = normalizePath(parsed.pathname);
       const idx = normalizedPublicPath.indexOf(normalizedServePath);
@@ -322,6 +344,7 @@ export class RealtimeCallHandler {
     } catch {
       this.publicOrigin = null;
       this.publicPathPrefix = "";
+      this.publicUrlStreamScheme = null;
     }
   }
 
@@ -337,7 +360,11 @@ export class RealtimeCallHandler {
       to: params?.get("To") ?? undefined,
       direction: rawDirection?.startsWith("outbound") ? "outbound" : "inbound",
     });
-    const wsUrl = `wss://${host}${this.getStreamPathPattern()}/${token}`;
+    const scheme = resolveRealtimeStreamWsScheme({
+      publicUrlScheme: this.publicUrlStreamScheme,
+      host,
+    });
+    const wsUrl = `${scheme}://${host}${this.getStreamPathPattern()}/${token}`;
     const twiml = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
   <Connect>

@@ -111,13 +111,13 @@ const startRealtimeServer = async (
   close: () => Promise<void>;
 }> => {
   const payload = handler.buildTwiMLPayload(makeRequest("/voice/webhook"));
-  const match = payload.body.match(/wss:\/\/[^/]+(\/[^"]+)/);
+  const match = payload.body.match(/(wss|ws):\/\/[^/]+(\/[^"]+)/);
   if (!match) {
     throw new Error("Failed to extract realtime stream path");
   }
 
   return await startUpgradeWsServer({
-    urlPath: match[1],
+    urlPath: match[2],
     onUpgrade: (request, socket, head) => {
       handler.handleWebSocketUpgrade(request, socket, head);
     },
@@ -133,6 +133,24 @@ describe("RealtimeCallHandler path routing", () => {
     expect(payload.body).toMatch(
       /wss:\/\/gateway\.ts\.net\/voice\/stream\/realtime\/[0-9a-f-]{36}/,
     );
+  });
+
+  it("uses ws in TwiML when public URL is http (local gateway without TLS)", () => {
+    const handler = makeHandler();
+    handler.setPublicUrl("http://127.0.0.1:3000/voice/webhook");
+    const payload = handler.buildTwiMLPayload(makeRequest("/voice/webhook", "127.0.0.1:3000"));
+
+    expect(payload.statusCode).toBe(200);
+    expect(payload.body).toMatch(
+      /ws:\/\/127\.0\.0\.1:3000\/voice\/stream\/realtime\/[0-9a-f-]{36}/,
+    );
+  });
+
+  it("defaults to ws for localhost request host when public URL is unset", () => {
+    const handler = makeHandler();
+    const payload = handler.buildTwiMLPayload(makeRequest("/voice/webhook", "localhost:3000"));
+
+    expect(payload.body).toMatch(/ws:\/\/localhost:3000\/voice\/stream\/realtime\/[0-9a-f-]{36}/);
   });
 
   it("preserves a public path prefix ahead of serve.path", () => {
@@ -189,12 +207,12 @@ describe("RealtimeCallHandler path routing", () => {
         To: "+15550009999",
       }),
     );
-    const match = payload.body.match(/wss:\/\/[^/]+(\/[^"]+)/);
+    const match = payload.body.match(/(wss|ws):\/\/[^/]+(\/[^"]+)/);
     if (!match) {
       throw new Error("Failed to extract realtime stream path");
     }
     const server = await startUpgradeWsServer({
-      urlPath: match[1],
+      urlPath: match[2],
       onUpgrade: (request, socket, head) => {
         handler.handleWebSocketUpgrade(request, socket, head);
       },

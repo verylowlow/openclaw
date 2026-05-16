@@ -160,6 +160,7 @@ async function registerVoiceCallCli(
     logger: noopLogger,
     registerGatewayMethod: () => {},
     registerTool: () => {},
+    registerRealtimeVoiceProvider: () => {},
     registerCli: (fn: (ctx: RegisterCliContext) => void) =>
       fn({
         program,

@@ -4,8 +4,14 @@ Docs: https://docs.openclaw.ai
 
 ## Unreleased
 
+### Fixes
+
+- Voice Call: emit `ws://` (not `wss://`) for realtime `<Stream>` URLs when the configured public webhook URL is `http` or the request Host is localhost/127.\*, matching streaming media behavior so plain HTTP dev gateways receive Twilio media WebSockets.
+- Voice Call: resolve `volcReal` realtime credentials from flat `realtime.providers.volcReal` config (and from resolved provider config passed to `isConfigured`) so the bundled provider no longer falsely reports "not configured".
+
 ### Changes
 
+- Voice Call: bundle the Volcengine (`volcReal`) realtime voice provider inside the voice-call plugin and drop the separate `volcreal` extension entry.
 - Discord/voice: stream ElevenLabs TTS directly into Discord playback and send ElevenLabs latency optimization as the documented query parameter so spoken replies can start sooner.
 - Discord/voice: keep TTS playback running when another user starts speaking, ignore new capture during playback to avoid feedback loops, and downgrade expected receive-stream aborts to verbose diagnostics.
 - Telegram: treat successful same-chat `message` tool outbound sends during an inbound telegram turn as delivered when deciding whether to emit the rewritten silent reply fallback (#78685). Thanks @neeravmakwana.
