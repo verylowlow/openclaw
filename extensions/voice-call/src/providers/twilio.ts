@@ -690,6 +690,31 @@ export class TwilioProvider implements VoiceCallProvider {
    * Generates audio with core TTS, converts to mu-law, and streams via WebSocket.
    * Uses a queue to serialize playback and prevent overlapping audio.
    */
+  private ttsPlaybackMarkSeq = 0;
+  /** Latest stream playback mark per provider call (for goodbye hangup wait only). */
+  private lastStreamPlaybackByProviderCallId = new Map<
+    string,
+    { streamSid: string; markName: string; estimatedMs: number }
+  >();
+
+  /** Consume playback mark metadata recorded by the latest stream TTS (if any). */
+  consumeLastStreamPlayback(
+    providerCallId: string,
+  ): { streamSid: string; markName: string; estimatedMs: number } | undefined {
+    const entry = this.lastStreamPlaybackByProviderCallId.get(providerCallId);
+    this.lastStreamPlaybackByProviderCallId.delete(providerCallId);
+    return entry;
+  }
+
+  private resolveProviderCallIdForStream(streamSid: string): string | undefined {
+    for (const [providerCallId, mappedStreamSid] of this.callStreamMap) {
+      if (mappedStreamSid === streamSid) {
+        return providerCallId;
+      }
+    }
+    return undefined;
+  }
+
   private async playTtsViaStream(text: string, streamSid: string): Promise<void> {
     if (!this.ttsProvider || !this.mediaStreamHandler) {
       throw new Error("TTS provider and media stream handler required");
@@ -699,6 +724,8 @@ export class TwilioProvider implements VoiceCallProvider {
     const CHUNK_SIZE = 160;
     const CHUNK_DELAY_MS = 20;
     const SILENCE_CHUNK = Buffer.alloc(CHUNK_SIZE, 0xff);
+    const markName = `tts-${Date.now()}-${++this.ttsPlaybackMarkSeq}`;
+    let estimatedPlaybackMs = Math.min(30_000, Math.max(1200, text.trim().length * 180));
 
     const handler = this.mediaStreamHandler;
     const ttsProvider = this.ttsProvider;
@@ -765,6 +792,9 @@ export class TwilioProvider implements VoiceCallProvider {
         throw new Error("Telephony TTS produced no audio");
       }
 
+      // 8 kHz mu-law: 8000 bytes ≈ 1 second of audio.
+      estimatedPlaybackMs = Math.ceil((muLawAudio.length / 8000) * 1000) + 300;
+
       let chunkAttempts = 0;
       let chunkDelivered = 0;
       let nextChunkDueAt = Date.now() + CHUNK_DELAY_MS;
@@ -791,8 +821,8 @@ export class TwilioProvider implements VoiceCallProvider {
 
       let markSent = true;
       if (!signal.aborted) {
-        // Send a mark to track when audio finishes
-        markSent = sendPlaybackMark(`tts-${Date.now()}`).sent;
+        // Send a mark; Twilio echoes it when playback reaches this point.
+        markSent = sendPlaybackMark(markName).sent;
       }
 
       if (!signal.aborted && chunkAttempts > 0 && (chunkDelivered === 0 || !markSent)) {
@@ -806,6 +836,15 @@ export class TwilioProvider implements VoiceCallProvider {
         throw new Error(`Telephony stream playback failed: ${failures.join("; ")}`);
       }
     });
+
+    const providerCallId = this.resolveProviderCallIdForStream(streamSid);
+    if (providerCallId) {
+      this.lastStreamPlaybackByProviderCallId.set(providerCallId, {
+        streamSid,
+        markName,
+        estimatedMs: estimatedPlaybackMs,
+      });
+    }
   }
 
   /**

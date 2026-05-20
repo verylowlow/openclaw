@@ -1388,6 +1388,7 @@ describe("VoiceCallWebhookServer barge-in suppression during initial message", (
   const getMediaCallbacks = (server: VoiceCallWebhookServer) =>
     server.getMediaStreamHandler() as unknown as {
       config: {
+        onConnect?: (providerCallId: string, streamSid: string) => void;
         onSpeechStart?: (providerCallId: string) => void;
         onTranscript?: (providerCallId: string, transcript: string) => void;
       };
@@ -1461,8 +1462,12 @@ describe("VoiceCallWebhookServer barge-in suppression during initial message", (
       }
       call.state = "listening";
 
+      vi.useFakeTimers();
+      media.config.onConnect?.("CA-barge", "MZ-barge");
       media.config.onSpeechStart?.("CA-barge");
       media.config.onTranscript?.("CA-barge", "hello after greeting");
+      await vi.advanceTimersByTimeAsync(500);
+      vi.useRealTimers();
       expect(clearTtsQueue).toHaveBeenCalledTimes(2);
       expect(handleInboundResponse).toHaveBeenCalledTimes(1);
       expect(processEvent).toHaveBeenCalledTimes(1);
@@ -1519,8 +1524,12 @@ describe("VoiceCallWebhookServer barge-in suppression during initial message", (
 
     try {
       const media = getMediaCallbacks(server);
+      vi.useFakeTimers();
+      media.config.onConnect?.("CA-inbound", "MZ-inbound");
       media.config.onSpeechStart?.("CA-inbound");
       media.config.onTranscript?.("CA-inbound", "hello");
+      await vi.advanceTimersByTimeAsync(500);
+      vi.useRealTimers();
       expect(clearTtsQueue).toHaveBeenCalledTimes(2);
       expect(processEvent).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -1531,7 +1540,223 @@ describe("VoiceCallWebhookServer barge-in suppression during initial message", (
           isFinal: true,
         }),
       );
-      expect(handleInboundResponse).toHaveBeenCalledWith("call-inbound", "hello");
+      expect(handleInboundResponse).toHaveBeenCalledWith(
+        "call-inbound",
+        "hello",
+        expect.objectContaining({ providerCallId: "CA-inbound" }),
+      );
+    } finally {
+      await server.stop();
+    }
+  });
+
+  it("debounces rapid stream transcripts into a single auto-response", async () => {
+    const call = createCall(Date.now() - 1_000);
+    call.callId = "call-debounce";
+    call.providerCallId = "CA-debounce";
+    call.direction = "outbound";
+    call.state = "listening";
+    call.metadata = { mode: "conversation" };
+
+    const manager = {
+      getActiveCalls: () => [call],
+      getCallByProviderCallId: (providerCallId: string) =>
+        providerCallId === call.providerCallId ? call : undefined,
+      getCall: (callId: string) => (callId === call.callId ? call : undefined),
+      endCall: vi.fn(async () => ({ success: true })),
+      speakInitialMessage: vi.fn(async () => {}),
+      processEvent: vi.fn(),
+    } as unknown as CallManager;
+
+    const config = createConfig({
+      provider: "twilio",
+      streaming: {
+        ...createConfig().streaming,
+        enabled: true,
+        providers: {
+          openai: {
+            apiKey: "test-key", // pragma: allowlist secret
+          },
+        },
+      },
+    });
+    const server = new VoiceCallWebhookServer(
+      config,
+      manager,
+      createTwilioStreamingProvider({ clearTtsQueue: vi.fn() }),
+    );
+    await server.start();
+    const handleInboundResponse = vi.fn(async () => {});
+    (
+      server as unknown as {
+        handleInboundResponse: (
+          callId: string,
+          transcript: string,
+          streamContext?: { generation: number; providerCallId: string },
+        ) => Promise<void>;
+      }
+    ).handleInboundResponse = handleInboundResponse;
+
+    try {
+      const media = getMediaCallbacks(server);
+      vi.useFakeTimers();
+      media.config.onConnect?.("CA-debounce", "MZ-debounce");
+      media.config.onTranscript?.("CA-debounce", "哦呦，那你抢到红包了吗？");
+      media.config.onTranscript?.("CA-debounce", "你抢到多少钱的红包呀？");
+      await vi.advanceTimersByTimeAsync(500);
+      vi.useRealTimers();
+      expect(handleInboundResponse).toHaveBeenCalledTimes(1);
+      expect(handleInboundResponse).toHaveBeenCalledWith(
+        "call-debounce",
+        "哦呦，那你抢到红包了吗？ 你抢到多少钱的红包呀？",
+        expect.objectContaining({ providerCallId: "CA-debounce" }),
+      );
+    } finally {
+      await server.stop();
+    }
+  });
+
+  it("passes hangupAfterGoodbye when user transcript matches exit intent", async () => {
+    const call = createCall(Date.now() - 1_000);
+    call.callId = "call-goodbye";
+    call.providerCallId = "CA-goodbye";
+    call.direction = "outbound";
+    call.state = "listening";
+    call.metadata = { mode: "conversation" };
+
+    const manager = {
+      getActiveCalls: () => [call],
+      getCallByProviderCallId: (providerCallId: string) =>
+        providerCallId === call.providerCallId ? call : undefined,
+      getCall: (callId: string) => (callId === call.callId ? call : undefined),
+      endCall: vi.fn(async () => ({ success: true })),
+      speakInitialMessage: vi.fn(async () => {}),
+      processEvent: vi.fn(),
+    } as unknown as CallManager;
+
+    const config = createConfig({
+      provider: "twilio",
+      streaming: {
+        ...createConfig().streaming,
+        enabled: true,
+        providers: {
+          openai: {
+            apiKey: "test-key", // pragma: allowlist secret
+          },
+        },
+      },
+    });
+    const server = new VoiceCallWebhookServer(
+      config,
+      manager,
+      createTwilioStreamingProvider({ clearTtsQueue: vi.fn() }),
+    );
+    await server.start();
+    const handleInboundResponse = vi.fn(async () => {});
+    (
+      server as unknown as {
+        handleInboundResponse: (
+          callId: string,
+          transcript: string,
+          streamContext?: { hangupAfterGoodbye?: boolean },
+        ) => Promise<void>;
+      }
+    ).handleInboundResponse = handleInboundResponse;
+
+    try {
+      const media = getMediaCallbacks(server);
+      vi.useFakeTimers();
+      media.config.onConnect?.("CA-goodbye", "MZ-goodbye");
+      media.config.onTranscript?.("CA-goodbye", "啊，那我没别的事情了，那就这样吧。");
+      await vi.advanceTimersByTimeAsync(500);
+      vi.useRealTimers();
+      expect(handleInboundResponse).toHaveBeenCalledWith(
+        "call-goodbye",
+        "啊，那我没别的事情了，那就这样吧。",
+        expect.objectContaining({ hangupAfterGoodbye: true, providerCallId: "CA-goodbye" }),
+      );
+    } finally {
+      await server.stop();
+    }
+  });
+
+  it("ends call after farewell delay when goodbye hangup is armed", async () => {
+    const call = createCall(Date.now() - 1_000);
+    call.callId = "call-hangup";
+    call.providerCallId = "CA-hangup";
+    call.direction = "outbound";
+    call.state = "listening";
+    call.metadata = { mode: "conversation" };
+
+    const endCall = vi.fn(async () => ({ success: true }));
+    const manager = {
+      getActiveCalls: () => [call],
+      getCallByProviderCallId: (providerCallId: string) =>
+        providerCallId === call.providerCallId ? call : undefined,
+      getCall: (callId: string) => (callId === call.callId ? call : undefined),
+      endCall,
+      speakInitialMessage: vi.fn(async () => {}),
+      processEvent: vi.fn(),
+    } as unknown as CallManager;
+
+    const config = createConfig({
+      provider: "twilio",
+      streaming: {
+        ...createConfig().streaming,
+        enabled: true,
+        providers: {
+          openai: {
+            apiKey: "test-key", // pragma: allowlist secret
+          },
+        },
+      },
+    });
+    const server = new VoiceCallWebhookServer(
+      config,
+      manager,
+      createTwilioStreamingProvider({
+        clearTtsQueue: vi.fn(),
+        consumeLastStreamPlayback: () => ({
+          streamSid: "MZ-hangup",
+          markName: "tts-test",
+          estimatedMs: 200,
+        }),
+      }),
+    );
+    await server.start();
+
+    try {
+      const media = getMediaCallbacks(server);
+      media.config.onConnect?.("CA-hangup", "MZ-hangup");
+      (
+        server as unknown as {
+          streamAutoResponseByProviderCallId: Map<
+            string,
+            { generation: number; inFlight: boolean }
+          >;
+        }
+      ).streamAutoResponseByProviderCallId.set("CA-hangup", { generation: 1, inFlight: false });
+      vi.useFakeTimers();
+      const hangupPromise = (
+        server as unknown as {
+          maybeHangupAfterGoodbye: (
+            callId: string,
+            streamContext: {
+              generation: number;
+              providerCallId: string;
+              hangupAfterGoodbye: boolean;
+            },
+          ) => Promise<void>;
+        }
+      ).maybeHangupAfterGoodbye("call-hangup", {
+        generation: 1,
+        providerCallId: "CA-hangup",
+        hangupAfterGoodbye: true,
+      });
+      await vi.advanceTimersByTimeAsync(10_000);
+      await hangupPromise;
+      vi.useRealTimers();
+      expect(endCall).toHaveBeenCalledWith("call-hangup", { reason: "hangup-bot" });
     } finally {
       await server.stop();
     }

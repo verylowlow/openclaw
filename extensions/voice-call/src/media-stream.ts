@@ -140,6 +140,11 @@ export class MediaStreamHandler {
   private ttsPlaying = new Map<string, boolean>();
   /** Active TTS playback controllers per stream */
   private ttsActiveControllers = new Map<string, AbortController>();
+  /** Waiters for Twilio echoing outbound playback marks. */
+  private playbackMarkWaiters = new Map<
+    string,
+    Map<string, { resolve: () => void; timer: ReturnType<typeof setTimeout> }>
+  >();
 
   constructor(config: MediaStreamConfig) {
     this.config = config;
@@ -257,7 +262,12 @@ export class MediaStreamHandler {
             break;
 
           case "clear":
+            break;
+
           case "mark":
+            if (session?.streamSid && message.mark?.name) {
+              this.resolvePlaybackMark(session.streamSid, message.mark.name);
+            }
             break;
         }
       } catch (error) {
@@ -317,32 +327,34 @@ export class MediaStreamHandler {
       providerConfig: this.config.providerConfig,
       onPartial: (partial) => {
         const session = this.sessions.get(streamSid);
-        if (session) {
-          this.emitTalkEvent(session, {
-            type: "transcript.delta",
-            turnId: this.ensureActiveTurn(session),
-            payload: { callId: callSid, streamSid, text: partial, role: "user" },
-          });
+        if (!session) {
+          return;
         }
+        this.emitTalkEvent(session, {
+          type: "transcript.delta",
+          turnId: this.ensureActiveTurn(session),
+          payload: { callId: callSid, streamSid, text: partial, role: "user" },
+        });
         this.config.onPartialTranscript?.(callSid, partial);
       },
       onTranscript: (transcript) => {
         const session = this.sessions.get(streamSid);
-        if (session) {
-          const turnId = this.ensureActiveTurn(session);
-          this.emitTalkEvent(session, {
-            type: "input.audio.committed",
-            turnId,
-            final: true,
-            payload: { callId: callSid, streamSid },
-          });
-          this.emitTalkEvent(session, {
-            type: "transcript.done",
-            turnId,
-            final: true,
-            payload: { callId: callSid, streamSid, text: transcript, role: "user" },
-          });
+        if (!session) {
+          return;
         }
+        const turnId = this.ensureActiveTurn(session);
+        this.emitTalkEvent(session, {
+          type: "input.audio.committed",
+          turnId,
+          final: true,
+          payload: { callId: callSid, streamSid },
+        });
+        this.emitTalkEvent(session, {
+          type: "transcript.done",
+          turnId,
+          final: true,
+          payload: { callId: callSid, streamSid, text: transcript, role: "user" },
+        });
         this.config.onTranscript?.(callSid, transcript);
       },
       onSpeechStart: () => {
@@ -625,6 +637,29 @@ export class MediaStreamHandler {
   }
 
   /**
+   * Wait until Twilio echoes the given playback mark, or until timeout.
+   * Resolves on timeout as a best-effort fallback (network may drop marks).
+   */
+  waitForPlaybackMark(streamSid: string, markName: string, timeoutMs: number): Promise<void> {
+    return new Promise((resolve) => {
+      const finish = () => {
+        this.cancelPlaybackMarkWaiter(streamSid, markName);
+        resolve();
+      };
+      const timer = setTimeout(finish, timeoutMs);
+      timer.unref?.();
+
+      let streamWaiters = this.playbackMarkWaiters.get(streamSid);
+      if (!streamWaiters) {
+        streamWaiters = new Map();
+        this.playbackMarkWaiters.set(streamSid, streamWaiters);
+      }
+      this.cancelPlaybackMarkWaiter(streamSid, markName);
+      streamWaiters.set(markName, { resolve: finish, timer });
+    });
+  }
+
+  /**
    * Send a mark event to track audio playback position.
    */
   sendMark(streamSid: string, name: string): StreamSendResult {
@@ -813,7 +848,43 @@ export class MediaStreamHandler {
     return turn.turnId;
   }
 
+  private resolvePlaybackMark(streamSid: string, markName: string): void {
+    const streamWaiters = this.playbackMarkWaiters.get(streamSid);
+    const waiter = streamWaiters?.get(markName);
+    if (!waiter) {
+      return;
+    }
+    streamWaiters?.delete(markName);
+    waiter.resolve();
+  }
+
+  private cancelPlaybackMarkWaiter(streamSid: string, markName: string): void {
+    const streamWaiters = this.playbackMarkWaiters.get(streamSid);
+    const waiter = streamWaiters?.get(markName);
+    if (!waiter) {
+      return;
+    }
+    clearTimeout(waiter.timer);
+    streamWaiters.delete(markName);
+    if (streamWaiters.size === 0) {
+      this.playbackMarkWaiters.delete(streamSid);
+    }
+  }
+
+  private clearPlaybackMarkWaiters(streamSid: string): void {
+    const streamWaiters = this.playbackMarkWaiters.get(streamSid);
+    if (!streamWaiters) {
+      return;
+    }
+    for (const waiter of streamWaiters.values()) {
+      clearTimeout(waiter.timer);
+      waiter.resolve();
+    }
+    this.playbackMarkWaiters.delete(streamSid);
+  }
+
   private clearTtsState(streamSid: string): void {
+    this.clearPlaybackMarkWaiters(streamSid);
     const queue = this.ttsQueues.get(streamSid);
     if (queue) {
       this.resolveQueuedTtsEntries(queue);

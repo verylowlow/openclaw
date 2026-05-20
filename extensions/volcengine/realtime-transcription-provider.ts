@@ -9,6 +9,7 @@ import { normalizeResolvedSecretInputString } from "openclaw/plugin-sdk/secret-i
 import { trimToUndefined } from "openclaw/plugin-sdk/speech-core";
 import { WebSocket } from "ws";
 import { convertMulawToPcm16k } from "./mulaw-to-pcm.js";
+import { resolveInProgressPartialFromUtterances } from "./realtime-transcription-utils.js";
 import {
   buildVolcAudioRequest,
   buildVolcFullClientRequest,
@@ -110,8 +111,17 @@ function createVolcSession(
   let pendingTranscript = "";
   let lastDefiniteCount = 0; // track how many definite utterances we've already emitted
   let speechStarted = false; // track whether we've fired onSpeechStart
+  let acceptEvents = true; // drop late STT frames after close/disconnect
   let seq = 2; // seq=1 is reserved for full client request
   let audioAccumulator = Buffer.alloc(0);
+
+  const emitPartial = (text: string) => {
+    if (!acceptEvents) {
+      return;
+    }
+    pendingTranscript = text;
+    req.onPartial?.(pendingTranscript);
+  };
 
   return {
     async connect() {
@@ -170,7 +180,9 @@ function createVolcSession(
       });
 
       ws.on("message", (data: Buffer, isBinary: boolean) => {
-        if (!isBinary) return;
+        if (!isBinary || !acceptEvents) {
+          return;
+        }
         const resp = parseVolcResponse(data);
 
         if (resp.errorCode !== 0) {
@@ -180,17 +192,22 @@ function createVolcSession(
           return;
         }
 
+        const result = resp.payload?.result as Record<string, unknown> | undefined;
+        const utterances = result?.utterances;
+        const inProgressFromUtterances = resolveInProgressPartialFromUtterances(utterances);
+
         if (resp.text) {
-          // "full" result_type: resp.text is the complete current text.
-          pendingTranscript = resp.text;
-          req.onPartial?.(pendingTranscript);
+          // Prefer non-definite utterance text so partials do not accumulate the full session.
+          const partialText =
+            inProgressFromUtterances !== undefined ? inProgressFromUtterances : resp.text;
+          emitPartial(partialText);
 
           // Fire onSpeechStart on the first non-empty text from the server.
           // Volcengine's binary protocol has no explicit "speech start" signal,
           // so we use the first partial transcript as the indicator that the
           // user has started speaking. This enables barge-in (clearing TTS
           // playback) before the full utterance is finalized.
-          if (!speechStarted) {
+          if (!speechStarted && partialText.trim()) {
             speechStarted = true;
             console.log("[volcengine] speech start detected (first partial)");
             req.onSpeechStart?.();
@@ -208,23 +225,23 @@ function createVolcSession(
         // utterances seen so far. We must track how many definite utterances we've
         // already emitted to avoid firing onTranscript multiple times for the
         // same finalized sentence.
-        if (resp.payload) {
-          const result = resp.payload.result as Record<string, unknown> | undefined;
-          const utterances = result?.utterances;
-          if (Array.isArray(utterances)) {
-            const definiteUtts = utterances.filter(
-              (u) => u && typeof u === "object" && (u as Record<string, unknown>).definite === true,
-            ) as Array<Record<string, unknown>>;
+        if (Array.isArray(utterances)) {
+          const definiteUtts = utterances.filter(
+            (u) => u && typeof u === "object" && (u as Record<string, unknown>).definite === true,
+          ) as Array<Record<string, unknown>>;
 
-            // Only emit NEW definite utterances (those beyond lastDefiniteCount)
-            for (let i = lastDefiniteCount; i < definiteUtts.length; i++) {
-              const uttText = String(definiteUtts[i].text ?? "").trim();
-              if (uttText) {
-                console.log(`[volcengine] definite utterance: "${uttText}"`);
-                req.onTranscript?.(uttText);
-              }
+          // Only emit NEW definite utterances (those beyond lastDefiniteCount)
+          for (let i = lastDefiniteCount; i < definiteUtts.length; i++) {
+            const uttText = String(definiteUtts[i].text ?? "").trim();
+            if (uttText) {
+              console.log(`[volcengine] definite utterance: "${uttText}"`);
+              req.onTranscript?.(uttText);
             }
-            lastDefiniteCount = definiteUtts.length;
+          }
+          lastDefiniteCount = definiteUtts.length;
+
+          if (inProgressFromUtterances !== undefined) {
+            emitPartial(inProgressFromUtterances);
           }
         }
       });
@@ -289,6 +306,7 @@ function createVolcSession(
 
     close() {
       if (!ws) return;
+      acceptEvents = false;
 
       try {
         if (audioAccumulator.length > 0) {

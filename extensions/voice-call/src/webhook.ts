@@ -27,15 +27,44 @@ import { MediaStreamHandler } from "./media-stream.js";
 import type { VoiceCallProvider } from "./providers/base.js";
 import { isProviderStatusTerminal } from "./providers/shared/call-status.js";
 import type { TwilioProvider } from "./providers/twilio.js";
+import {
+  isRedundantFollowUpTranscript,
+  looksLikeGoodbyeIntent,
+  mergeStreamTranscripts,
+  shouldSkipFillerTranscript,
+} from "./stream-transcript-policy.js";
 import type { CallRecord, NormalizedEvent, WebhookContext } from "./types.js";
 import type { WebhookResponsePayload } from "./webhook.types.js";
 import type { RealtimeCallHandler } from "./webhook/realtime-handler.js";
 import { startStaleCallReaper } from "./webhook/stale-call-reaper.js";
 
+type StreamAutoResponseState = {
+  debounceTimer?: ReturnType<typeof setTimeout>;
+  pendingTranscript?: string;
+  generation: number;
+  inFlight: boolean;
+  lastRespondedTranscript?: string;
+  goodbyeCooldownUntil?: number;
+  /** Hang up after the next bot speak completes (user expressed exit intent). */
+  hangupAfterNextSpeak?: boolean;
+};
+
+type StreamAutoResponseContext = {
+  generation: number;
+  providerCallId: string;
+  hangupAfterGoodbye: boolean;
+};
+
 const MAX_WEBHOOK_BODY_BYTES = WEBHOOK_BODY_READ_DEFAULTS.preAuth.maxBytes;
 const WEBHOOK_BODY_TIMEOUT_MS = WEBHOOK_BODY_READ_DEFAULTS.preAuth.timeoutMs;
 const MISSING_REMOTE_ADDRESS_IN_FLIGHT_KEY = "__voice_call_no_remote__";
 const STREAM_DISCONNECT_HANGUP_GRACE_MS = 10000; //2000,old value
+const STREAM_TRANSCRIPT_DEBOUNCE_MS = 450;
+const STREAM_AUTO_RESPONSE_GOODBYE_COOLDOWN_MS = 3000;
+/** Extra pause after farewell TTS finishes before hanging up. */
+const STREAM_GOODBYE_HANGUP_DELAY_MS = 400;
+/** Max wait for farewell audio (mark echo often absent on bridged streams). */
+const STREAM_GOODBYE_PLAYBACK_WAIT_MAX_MS = 8000;
 const TRANSCRIPT_LOG_MAX_CHARS = 200;
 
 type RealtimeTranscriptionRuntime = typeof import("./realtime-transcription.runtime.js");
@@ -199,6 +228,10 @@ export class VoiceCallWebhookServer {
   private mediaStreamHandler: MediaStreamHandler | null = null;
   /** Delayed auto-hangup timers keyed by provider call ID after stream disconnect. */
   private pendingDisconnectHangups = new Map<string, ReturnType<typeof setTimeout>>();
+  /** Active media streams (provider call IDs) — drop STT after disconnect. */
+  private activeMediaStreamProviderCallIds = new Set<string>();
+  /** Debounced auto-response state for streaming STT definite utterances. */
+  private streamAutoResponseByProviderCallId = new Map<string, StreamAutoResponseState>();
   /** Realtime voice handler for duplex provider bridges. */
   private realtimeHandler: RealtimeCallHandler | null = null;
 
@@ -278,6 +311,184 @@ export class VoiceCallWebhookServer {
     }
 
     return remoteIp;
+  }
+
+  private markMediaStreamActive(providerCallId: string): void {
+    this.activeMediaStreamProviderCallIds.add(providerCallId);
+  }
+
+  private markMediaStreamInactive(providerCallId: string): void {
+    this.activeMediaStreamProviderCallIds.delete(providerCallId);
+    const state = this.streamAutoResponseByProviderCallId.get(providerCallId);
+    if (state?.debounceTimer) {
+      clearTimeout(state.debounceTimer);
+    }
+    this.streamAutoResponseByProviderCallId.delete(providerCallId);
+  }
+
+  private getOrCreateStreamAutoResponseState(providerCallId: string): StreamAutoResponseState {
+    let state = this.streamAutoResponseByProviderCallId.get(providerCallId);
+    if (!state) {
+      state = { generation: 0, inFlight: false };
+      this.streamAutoResponseByProviderCallId.set(providerCallId, state);
+    }
+    return state;
+  }
+
+  private scheduleStreamAutoResponse(
+    providerCallId: string,
+    callId: string,
+    transcript: string,
+  ): void {
+    if (!this.activeMediaStreamProviderCallIds.has(providerCallId)) {
+      return;
+    }
+    if (shouldSkipFillerTranscript(transcript)) {
+      console.log(
+        `[voice-call] Skipping filler stream transcript for ${providerCallId}: "${sanitizeTranscriptForLog(transcript)}"`,
+      );
+      return;
+    }
+
+    const state = this.getOrCreateStreamAutoResponseState(providerCallId);
+    const now = Date.now();
+    if (state.goodbyeCooldownUntil && now < state.goodbyeCooldownUntil) {
+      if (looksLikeGoodbyeIntent(transcript)) {
+        console.log(
+          `[voice-call] Skipping goodbye stream auto-response during cooldown for ${providerCallId}`,
+        );
+        return;
+      }
+    }
+    if (
+      state.lastRespondedTranscript &&
+      isRedundantFollowUpTranscript(transcript, state.lastRespondedTranscript)
+    ) {
+      console.log(
+        `[voice-call] Skipping redundant stream auto-response for ${providerCallId}: "${sanitizeTranscriptForLog(transcript)}"`,
+      );
+      return;
+    }
+
+    if (looksLikeGoodbyeIntent(transcript)) {
+      state.hangupAfterNextSpeak = true;
+    } else {
+      state.hangupAfterNextSpeak = false;
+    }
+
+    state.pendingTranscript = state.pendingTranscript
+      ? mergeStreamTranscripts(state.pendingTranscript, transcript)
+      : transcript;
+    if (state.debounceTimer) {
+      clearTimeout(state.debounceTimer);
+    }
+    state.debounceTimer = setTimeout(() => {
+      state.debounceTimer = undefined;
+      void this.flushStreamAutoResponse(providerCallId, callId);
+    }, STREAM_TRANSCRIPT_DEBOUNCE_MS);
+    state.debounceTimer.unref?.();
+  }
+
+  private async flushStreamAutoResponse(providerCallId: string, callId: string): Promise<void> {
+    const state = this.streamAutoResponseByProviderCallId.get(providerCallId);
+    if (!state?.pendingTranscript?.trim()) {
+      return;
+    }
+    if (state.inFlight) {
+      return;
+    }
+
+    const transcript = state.pendingTranscript.trim();
+    state.pendingTranscript = undefined;
+    const generation = state.generation + 1;
+    state.generation = generation;
+    state.inFlight = true;
+    const hangupAfterGoodbye = state.hangupAfterNextSpeak === true;
+    try {
+      await this.handleInboundResponse(callId, transcript, {
+        generation,
+        providerCallId,
+        hangupAfterGoodbye,
+      });
+    } finally {
+      state.inFlight = false;
+      state.hangupAfterNextSpeak = false;
+    }
+    if (state.generation !== generation) {
+      if (state.pendingTranscript?.trim()) {
+        void this.flushStreamAutoResponse(providerCallId, callId);
+      }
+      return;
+    }
+    state.lastRespondedTranscript = transcript;
+    if (looksLikeGoodbyeIntent(transcript)) {
+      state.goodbyeCooldownUntil = Date.now() + STREAM_AUTO_RESPONSE_GOODBYE_COOLDOWN_MS;
+    }
+    if (state.pendingTranscript?.trim()) {
+      void this.flushStreamAutoResponse(providerCallId, callId);
+    }
+  }
+
+  private async maybeHangupAfterGoodbye(
+    callId: string,
+    streamContext: StreamAutoResponseContext,
+  ): Promise<void> {
+    if (!streamContext.hangupAfterGoodbye) {
+      return;
+    }
+    if (!this.activeMediaStreamProviderCallIds.has(streamContext.providerCallId)) {
+      return;
+    }
+    const state = this.streamAutoResponseByProviderCallId.get(streamContext.providerCallId);
+    if (!state || state.generation !== streamContext.generation) {
+      return;
+    }
+
+    let playbackWaitMs = 2000;
+    if (this.provider.name === "twilio") {
+      const twilio = this.provider as TwilioProvider;
+      const consumePlayback =
+        typeof twilio.consumeLastStreamPlayback === "function"
+          ? twilio.consumeLastStreamPlayback.bind(twilio)
+          : undefined;
+      const playback = consumePlayback?.(streamContext.providerCallId);
+      if (playback) {
+        playbackWaitMs = Math.min(
+          playback.estimatedMs + STREAM_GOODBYE_HANGUP_DELAY_MS,
+          STREAM_GOODBYE_PLAYBACK_WAIT_MAX_MS,
+        );
+        // Best-effort mark wait (short); bridged streams often never echo marks.
+        if (this.mediaStreamHandler) {
+          await this.mediaStreamHandler.waitForPlaybackMark(
+            playback.streamSid,
+            playback.markName,
+            Math.min(playback.estimatedMs + 500, 2500),
+          );
+        }
+      }
+    }
+
+    const remainingMs = Math.max(0, playbackWaitMs - STREAM_GOODBYE_HANGUP_DELAY_MS);
+    if (remainingMs > 0) {
+      await new Promise((resolve) => setTimeout(resolve, remainingMs));
+    }
+    await new Promise((resolve) => setTimeout(resolve, STREAM_GOODBYE_HANGUP_DELAY_MS));
+
+    const call = this.manager.getCall(callId);
+    if (!call) {
+      console.warn(`[voice-call] Goodbye hangup skipped: call ${callId} not found`);
+      return;
+    }
+
+    console.log(
+      `[voice-call] User goodbye detected; ending call ${callId} (providerCallId=${streamContext.providerCallId}, playbackWaitMs=${playbackWaitMs})`,
+    );
+    const result = await this.manager.endCall(callId, { reason: "hangup-bot" });
+    if (result.success) {
+      console.log(`[voice-call] Goodbye hangup completed for call ${callId}`);
+    } else {
+      console.warn(`[voice-call] Failed to end call after goodbye for ${callId}: ${result.error}`);
+    }
   }
 
   private shouldSuppressBargeInForInitialMessage(call: CallRecord | undefined): boolean {
@@ -404,9 +615,7 @@ export class VoiceCallWebhookServer {
         const callMode = call.metadata?.mode as string | undefined;
         const shouldRespond = call.direction === "inbound" || callMode === "conversation";
         if (shouldRespond) {
-          this.handleInboundResponse(call.callId, transcript).catch((err) => {
-            console.warn(`[voice-call] Failed to auto-respond:`, err);
-          });
+          this.scheduleStreamAutoResponse(providerCallId, call.callId, transcript);
         }
       },
       onSpeechStart: (providerCallId) => {
@@ -420,6 +629,9 @@ export class VoiceCallWebhookServer {
         (this.provider as TwilioProvider).clearTtsQueue(providerCallId);
       },
       onPartialTranscript: (callId, partial) => {
+        if (!this.activeMediaStreamProviderCallIds.has(callId)) {
+          return;
+        }
         const safePartial = sanitizeTranscriptForLog(partial);
         console.log(`[voice-call] Partial for ${callId}: ${safePartial} (chars=${partial.length})`);
       },
@@ -431,6 +643,7 @@ export class VoiceCallWebhookServer {
       },
       onConnect: (callId, streamSid) => {
         console.log(`[voice-call] Media stream connected: ${callId} -> ${streamSid}`);
+        this.markMediaStreamActive(callId);
         this.clearPendingDisconnectHangup(callId);
 
         // Register stream with provider for TTS routing
@@ -445,6 +658,7 @@ export class VoiceCallWebhookServer {
       },
       onDisconnect: (callId, streamSid) => {
         console.log(`[voice-call] Media stream disconnected: ${callId} (${streamSid})`);
+        this.markMediaStreamInactive(callId);
         if (this.provider.name === "twilio") {
           (this.provider as TwilioProvider).unregisterCallStream(callId, streamSid);
         }
@@ -885,8 +1099,12 @@ export class VoiceCallWebhookServer {
    * Handle auto-response for inbound calls using the agent system.
    * Supports tool calling for richer voice interactions.
    */
-  private async handleInboundResponse(callId: string, userMessage: string): Promise<void> {
-    console.log(`[voice-call] Auto-responding to inbound call ${callId}: "${userMessage}"`);
+  private async handleInboundResponse(
+    callId: string,
+    userMessage: string,
+    streamContext?: StreamAutoResponseContext,
+  ): Promise<void> {
+    console.log(`[voice-call] Auto-responding to call ${callId}: "${userMessage}"`);
 
     // Get call context for conversation history
     const call = this.manager.getCall(callId);
@@ -927,8 +1145,24 @@ export class VoiceCallWebhookServer {
       }
 
       if (result.text) {
+        if (streamContext) {
+          const state = this.streamAutoResponseByProviderCallId.get(streamContext.providerCallId);
+          if (!state || state.generation !== streamContext.generation) {
+            console.log(
+              `[voice-call] Dropping stale stream auto-response for ${callId} (generation mismatch)`,
+            );
+            return;
+          }
+        }
         console.log(`[voice-call] AI response: "${result.text}"`);
-        await this.manager.speak(callId, result.text);
+        const speakResult = await this.manager.speak(callId, result.text);
+        if (!speakResult.success) {
+          console.warn(`[voice-call] Farewell speak failed for ${callId}: ${speakResult.error}`);
+          return;
+        }
+        if (streamContext) {
+          await this.maybeHangupAfterGoodbye(callId, streamContext);
+        }
       }
     } catch (err) {
       console.error(`[voice-call] Auto-response error:`, err);

@@ -134,6 +134,20 @@ describe("MediaStreamHandler TTS queue", () => {
     expect(queuedRan).toBe(false);
   });
 
+  it("resolves waitForPlaybackMark when Twilio echoes the mark", async () => {
+    const handler = new MediaStreamHandler({
+      transcriptionProvider: createStubSttProvider(),
+      providerConfig: {},
+    });
+    const pending = handler.waitForPlaybackMark("MZ-mark", "tts-42", 5000);
+    (
+      handler as unknown as {
+        resolvePlaybackMark: (streamSid: string, markName: string) => void;
+      }
+    ).resolvePlaybackMark("MZ-mark", "tts-42");
+    await pending;
+  });
+
   it("resolves pending queued playback during stream teardown", async () => {
     const handler = new MediaStreamHandler({
       transcriptionProvider: createStubSttProvider(),
