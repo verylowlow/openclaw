@@ -240,6 +240,8 @@ type PendingStreamToken = {
   from?: string;
   to?: string;
   direction?: "inbound" | "outbound";
+  mode?: "notify" | "conversation";
+  initialMessage?: string;
 };
 
 type CallRegistration = {
@@ -355,10 +357,16 @@ export class RealtimeCallHandler {
   buildTwiMLPayload(req: http.IncomingMessage, params?: URLSearchParams): WebhookResponsePayload {
     const host = this.publicOrigin || req.headers.host || DEFAULT_HOST;
     const rawDirection = params?.get("Direction");
+    const modeRaw = params?.get("Mode") ?? params?.get("mode");
+    const mode = modeRaw === "notify" || modeRaw === "conversation" ? modeRaw : undefined;
+    const initialRaw = params?.get("InitialMessage") ?? params?.get("initialMessage");
+    const initialMessage = initialRaw && initialRaw.trim().length > 0 ? initialRaw : undefined;
     const token = this.issueStreamToken({
       from: params?.get("From") ?? undefined,
       to: params?.get("To") ?? undefined,
       direction: rawDirection?.startsWith("outbound") ? "outbound" : "inbound",
+      mode,
+      initialMessage,
     });
     const scheme = resolveRealtimeStreamWsScheme({
       publicUrlScheme: this.publicUrlStreamScheme,
@@ -518,6 +526,8 @@ export class RealtimeCallHandler {
       from: entry.from,
       to: entry.to,
       direction: entry.direction,
+      mode: entry.mode,
+      initialMessage: entry.initialMessage,
     };
   }
 
@@ -1132,6 +1142,14 @@ export class RealtimeCallHandler {
     const callRecord = this.manager.getCallByProviderCallId(callSid);
     if (!callRecord) {
       return null;
+    }
+
+    if (callerMeta.mode || callerMeta.initialMessage) {
+      callRecord.metadata = {
+        ...callRecord.metadata,
+        ...(callerMeta.mode ? { mode: callerMeta.mode } : {}),
+        ...(callerMeta.initialMessage ? { initialMessage: callerMeta.initialMessage } : {}),
+      };
     }
 
     const initialGreeting = this.extractInitialGreeting(callRecord);

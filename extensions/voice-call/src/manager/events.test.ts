@@ -490,6 +490,32 @@ describe("processEvent (functional)", () => {
     );
   });
 
+  it("applies outbound webhook Mode and InitialMessage from task dispatch", () => {
+    const ctx = createContext();
+    const event: NormalizedEvent = {
+      id: "evt-outbound-task",
+      type: "call.answered",
+      callId: "CA-outbound-task",
+      providerCallId: "CA-outbound-task",
+      timestamp: Date.now(),
+      direction: "outbound",
+      from: "+15550001111",
+      to: "+15550002222",
+      callMode: "notify",
+      initialMessage: "您好,电话已接通...",
+    };
+
+    processEvent(ctx, event);
+
+    const call = requireFirstActiveCall(ctx);
+    expect(call.metadata).toEqual(
+      expect.objectContaining({
+        mode: "notify",
+        initialMessage: "您好,电话已接通...",
+      }),
+    );
+  });
+
   it("deduplicates by dedupeKey even when event IDs differ", () => {
     const now = Date.now();
     const ctx = createContext();

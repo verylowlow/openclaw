@@ -85,6 +85,9 @@ const BaseEventSchema = z.object({
   direction: z.enum(["inbound", "outbound"]).optional(),
   from: z.string().optional(),
   to: z.string().optional(),
+  // Optional outbound task settings from webhook POST (newcallcall task dispatch)
+  callMode: z.enum(["notify", "conversation"]).optional(),
+  initialMessage: z.string().optional(),
 });
 
 const NormalizedEventSchema = z.discriminatedUnion("type", [

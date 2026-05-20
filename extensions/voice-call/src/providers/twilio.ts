@@ -324,6 +324,18 @@ export class TwilioProvider implements VoiceCallProvider {
     return undefined;
   }
 
+  private static parseWebhookCallMode(
+    params: URLSearchParams,
+  ): "notify" | "conversation" | undefined {
+    const raw = params.get("Mode") ?? params.get("mode");
+    return raw === "notify" || raw === "conversation" ? raw : undefined;
+  }
+
+  private static parseWebhookInitialMessage(params: URLSearchParams): string | undefined {
+    const raw = params.get("InitialMessage") ?? params.get("initialMessage");
+    return raw && raw.trim().length > 0 ? raw : undefined;
+  }
+
   /**
    * Convert Twilio webhook params to normalized event format.
    */
@@ -348,6 +360,8 @@ export class TwilioProvider implements VoiceCallProvider {
       direction: TwilioProvider.parseDirection(params.get("Direction")),
       from: params.get("From") || undefined,
       to: params.get("To") || undefined,
+      callMode: TwilioProvider.parseWebhookCallMode(params),
+      initialMessage: TwilioProvider.parseWebhookInitialMessage(params),
     };
 
     // Handle speech result (from <Gather>)

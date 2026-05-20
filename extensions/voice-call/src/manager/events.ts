@@ -63,6 +63,8 @@ function createWebhookCall(params: {
   direction: "inbound" | "outbound";
   from: string;
   to: string;
+  mode?: "notify" | "conversation";
+  initialMessage?: string;
 }): CallRecord {
   const callId = crypto.randomUUID();
   const effective = resolveVoiceCallEffectiveConfig(
@@ -88,10 +90,12 @@ function createWebhookCall(params: {
     transcript: [],
     processedEventIds: [],
     metadata: {
+      mode: params.mode ?? (params.direction === "outbound" ? "conversation" : undefined),
       initialMessage:
-        params.direction === "inbound"
+        params.initialMessage ??
+        (params.direction === "inbound"
           ? effectiveConfig.inboundGreeting || "Hello! How can I help you today?"
-          : undefined,
+          : undefined),
       ...(effective.numberRouteKey ? { numberRouteKey: effective.numberRouteKey } : {}),
     },
   };
@@ -163,6 +167,8 @@ export function processEvent(ctx: EventContext, event: NormalizedEvent): void {
       direction: eventDirection === "outbound" ? "outbound" : "inbound",
       from: event.from || "unknown",
       to: event.to || ctx.config.fromNumber || "unknown",
+      mode: event.callMode,
+      initialMessage: event.initialMessage,
     });
 
     // Normalize event to internal ID for downstream consumers.
