@@ -436,14 +436,19 @@ export class VoiceCallWebhookServer {
     if (!streamContext.hangupAfterGoodbye) {
       return;
     }
-    if (!this.activeMediaStreamProviderCallIds.has(streamContext.providerCallId)) {
-      return;
-    }
     const state = this.streamAutoResponseByProviderCallId.get(streamContext.providerCallId);
     if (!state || state.generation !== streamContext.generation) {
       return;
     }
+    if (state.debounceTimer) {
+      clearTimeout(state.debounceTimer);
+      state.debounceTimer = undefined;
+    }
+    state.pendingTranscript = undefined;
 
+    const streamStillActive = this.activeMediaStreamProviderCallIds.has(
+      streamContext.providerCallId,
+    );
     let playbackWaitMs = 2000;
     if (this.provider.name === "twilio") {
       const twilio = this.provider as TwilioProvider;
@@ -457,8 +462,8 @@ export class VoiceCallWebhookServer {
           playback.estimatedMs + STREAM_GOODBYE_HANGUP_DELAY_MS,
           STREAM_GOODBYE_PLAYBACK_WAIT_MAX_MS,
         );
-        // Best-effort mark wait (short); bridged streams often never echo marks.
-        if (this.mediaStreamHandler) {
+        // Best-effort mark wait only while stream is connected; passthrough often never echoes marks.
+        if (streamStillActive && this.mediaStreamHandler) {
           await this.mediaStreamHandler.waitForPlaybackMark(
             playback.streamSid,
             playback.markName,

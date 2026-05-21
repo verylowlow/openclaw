@@ -1369,7 +1369,7 @@ describe("VoiceCallWebhookServer stream disconnect grace", () => {
     expect(speakInitialMessage).toHaveBeenCalledWith("CA-stream-1");
 
     mediaHandler.config.onDisconnect?.("CA-stream-1", "MZ-new");
-    await vi.advanceTimersByTimeAsync(2_100);
+    await vi.advanceTimersByTimeAsync(10_100);
     expect(endCall).toHaveBeenCalledTimes(1);
     expect(endCall).toHaveBeenCalledWith(call.callId);
 
@@ -1757,6 +1757,89 @@ describe("VoiceCallWebhookServer barge-in suppression during initial message", (
       await hangupPromise;
       vi.useRealTimers();
       expect(endCall).toHaveBeenCalledWith("call-hangup", { reason: "hangup-bot" });
+    } finally {
+      await server.stop();
+    }
+  });
+
+  it("ends call after goodbye when media stream already disconnected", async () => {
+    const call = createCall(Date.now() - 1_000);
+    call.callId = "call-hangup-offline";
+    call.providerCallId = "CA-hangup-offline";
+    call.direction = "outbound";
+    call.state = "listening";
+    call.metadata = { mode: "conversation" };
+
+    const endCall = vi.fn(async () => ({ success: true }));
+    const manager = {
+      getActiveCalls: () => [call],
+      getCallByProviderCallId: (providerCallId: string) =>
+        providerCallId === call.providerCallId ? call : undefined,
+      getCall: (callId: string) => (callId === call.callId ? call : undefined),
+      endCall,
+      speakInitialMessage: vi.fn(async () => {}),
+      processEvent: vi.fn(),
+    } as unknown as CallManager;
+
+    const config = createConfig({
+      provider: "twilio",
+      streaming: {
+        ...createConfig().streaming,
+        enabled: true,
+        providers: {
+          openai: {
+            apiKey: "test-key", // pragma: allowlist secret
+          },
+        },
+      },
+    });
+    const server = new VoiceCallWebhookServer(
+      config,
+      manager,
+      createTwilioStreamingProvider({
+        clearTtsQueue: vi.fn(),
+        consumeLastStreamPlayback: () => ({
+          streamSid: "MZ-hangup-offline",
+          markName: "tts-offline",
+          estimatedMs: 200,
+        }),
+      }),
+    );
+    await server.start();
+
+    try {
+      (
+        server as unknown as {
+          streamAutoResponseByProviderCallId: Map<
+            string,
+            { generation: number; inFlight: boolean }
+          >;
+        }
+      ).streamAutoResponseByProviderCallId.set("CA-hangup-offline", {
+        generation: 1,
+        inFlight: false,
+      });
+      vi.useFakeTimers();
+      const hangupPromise = (
+        server as unknown as {
+          maybeHangupAfterGoodbye: (
+            callId: string,
+            streamContext: {
+              generation: number;
+              providerCallId: string;
+              hangupAfterGoodbye: boolean;
+            },
+          ) => Promise<void>;
+        }
+      ).maybeHangupAfterGoodbye("call-hangup-offline", {
+        generation: 1,
+        providerCallId: "CA-hangup-offline",
+        hangupAfterGoodbye: true,
+      });
+      await vi.advanceTimersByTimeAsync(10_000);
+      await hangupPromise;
+      vi.useRealTimers();
+      expect(endCall).toHaveBeenCalledWith("call-hangup-offline", { reason: "hangup-bot" });
     } finally {
       await server.stop();
     }
